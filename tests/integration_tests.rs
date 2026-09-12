@@ -402,3 +402,62 @@ fn test_scene_mouse_click_and_interactive_voxel_mining() {
     ent.update_mesh(placed_mesh);
     assert!(ent.is_mesh_dirty);
 }
+
+#[test]
+fn test_cursor_capture_and_visibility_settings() {
+    let mut scene = Scene::define(1280, 720, 60, "Cursor Test", 1, 100, 24);
+
+    // Initial default state
+    assert_eq!(scene.cursor_mode, CursorMode::Normal);
+    assert!(scene.cursor_visible);
+    assert!(matches!(scene.custom_cursor, CustomCursor::None));
+
+    // Capture mouse
+    scene.capture_mouse(true);
+    assert_eq!(scene.cursor_mode, CursorMode::Captured);
+    assert!(scene.cursor_state_dirty);
+
+    // Release mouse
+    scene.capture_mouse(false);
+    assert_eq!(scene.cursor_mode, CursorMode::Normal);
+
+    // Hide cursor
+    scene.hide_cursor();
+    assert!(!scene.cursor_visible);
+
+    // Show cursor
+    scene.show_cursor();
+    assert!(scene.cursor_visible);
+
+    // Replace cursor with custom crosshair
+    scene.replace_cursor(CustomCursor::crosshair());
+    assert!(!scene.cursor_visible); // Replaced cursor hides OS cursor
+    assert!(matches!(scene.custom_cursor, CustomCursor::Crosshair { .. }));
+
+    // Restore cursor
+    scene.restore_cursor();
+    assert!(scene.cursor_visible);
+    assert!(matches!(scene.custom_cursor, CustomCursor::None));
+}
+
+#[test]
+fn test_custom_cursor_mesh_generation() {
+    let crosshair = CustomCursor::crosshair();
+    let mesh = crosshair.generate_mesh(glam::Vec2::new(100.0, 50.0));
+    assert!(!mesh.vertices.is_empty());
+    assert!(!mesh.indices.is_empty());
+    // All vertices must have negative UV to bypass font texture sampling in 2D shader
+    assert!(mesh.vertices.iter().all(|v| v.uv[0] < 0.0 && v.uv[1] < 0.0));
+
+    let dot = CustomCursor::dot();
+    let dot_mesh = dot.generate_mesh(glam::Vec2::ZERO);
+    assert!(!dot_mesh.vertices.is_empty());
+
+    let pointer = CustomCursor::pointer();
+    let pointer_mesh = pointer.generate_mesh(glam::Vec2::new(-20.0, 40.0));
+    assert!(!pointer_mesh.vertices.is_empty());
+
+    let ring = CustomCursor::ring();
+    let ring_mesh = ring.generate_mesh(glam::Vec2::ZERO);
+    assert!(!ring_mesh.vertices.is_empty());
+}

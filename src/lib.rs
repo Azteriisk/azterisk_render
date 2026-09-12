@@ -1,5 +1,6 @@
 pub mod audio;
 pub mod camera;
+pub mod cursor;
 pub mod entity;
 pub mod errors;
 pub mod lighting;
@@ -12,6 +13,7 @@ pub mod ui;
 pub mod voxel;
 
 pub use audio::{AudioManager, SpatialSound};
+pub use cursor::{CursorMode, CustomCursor};
 pub use errors::{AzteriskError, Result};
 pub use lighting::{Light, LightType, LightsUniform, MAX_LIGHTS};
 pub use scene::{ElementState, IntoAsset, KeyCode, MouseButton, RenderMode, Scene};

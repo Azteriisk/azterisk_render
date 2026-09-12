@@ -8,7 +8,8 @@ use crate::renderer::pipeline::{CameraUniform, ModelUniform, Pipeline2D, Pipelin
 use crate::spatial::{IntoChunkCoord3D, IntoSubCoord3D, SubCoord3D};
 use crate::text::FontAtlas;
 use crate::ui::UIElement;
-use glam::{Mat4, Vec3};
+pub use crate::cursor::{CursorMode, CustomCursor};
+use glam::{Mat4, Vec2, Vec3};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -62,6 +63,12 @@ pub struct Scene {
     pub pressed_keys: HashSet<KeyCode>,
     pub entities_cleared: bool,
     pub clear_color: Option<[f64; 4]>,
+
+    pub cursor_mode: CursorMode,
+    pub cursor_visible: bool,
+    pub custom_cursor: CustomCursor,
+    pub cursor_screen_pos: Vec2,
+    pub cursor_state_dirty: bool,
 }
 
 impl Scene {
@@ -105,12 +112,70 @@ impl Scene {
             pressed_keys: HashSet::new(),
             entities_cleared: false,
             clear_color: None,
+            cursor_mode: CursorMode::Normal,
+            cursor_visible: true,
+            custom_cursor: CustomCursor::None,
+            cursor_screen_pos: Vec2::ZERO,
+            cursor_state_dirty: true,
         }
     }
 
     /// Sets the background clear color (R, G, B, A in 0.0 ..= 1.0).
     pub fn clear_color(&mut self, r: f64, g: f64, b: f64, a: f64) -> &mut Self {
         self.clear_color = Some([r, g, b, a]);
+        self
+    }
+
+    /// Sets the cursor mode (Normal, Hidden, Captured, or Confined).
+    pub fn cursor_mode(&mut self, mode: CursorMode) -> &mut Self {
+        self.cursor_mode = mode;
+        self.cursor_state_dirty = true;
+        self
+    }
+
+    /// Captures or releases the mouse input.
+    /// When captured, the cursor is locked to the window center and the OS cursor is hidden.
+    pub fn capture_mouse(&mut self, capture: bool) -> &mut Self {
+        self.cursor_mode = if capture {
+            CursorMode::Captured
+        } else {
+            CursorMode::Normal
+        };
+        self.cursor_state_dirty = true;
+        self
+    }
+
+    /// Sets whether the native OS cursor is visible.
+    pub fn cursor_visible(&mut self, visible: bool) -> &mut Self {
+        self.cursor_visible = visible;
+        self.cursor_state_dirty = true;
+        self
+    }
+
+    /// Hides the native OS cursor.
+    pub fn hide_cursor(&mut self) -> &mut Self {
+        self.cursor_visible(false)
+    }
+
+    /// Shows the native OS cursor.
+    pub fn show_cursor(&mut self) -> &mut Self {
+        self.cursor_visible(true)
+    }
+
+    /// Replaces the mouse cursor with a custom in-game cursor.
+    /// Automatically hides the native OS cursor.
+    pub fn replace_cursor(&mut self, cursor: CustomCursor) -> &mut Self {
+        self.custom_cursor = cursor;
+        self.cursor_visible = false;
+        self.cursor_state_dirty = true;
+        self
+    }
+
+    /// Restores the default native OS cursor and removes any custom replacement cursor.
+    pub fn restore_cursor(&mut self) -> &mut Self {
+        self.custom_cursor = CustomCursor::None;
+        self.cursor_visible = true;
+        self.cursor_state_dirty = true;
         self
     }
 
@@ -486,6 +551,42 @@ impl SceneApp {
         self.font_bind_group = font_bind_group;
     }
 
+    fn sync_cursor(&mut self) {
+        if self.scene.cursor_state_dirty {
+            if let Some(gpu) = &self.gpu {
+                let has_custom = !matches!(self.scene.custom_cursor, CustomCursor::None);
+                let show_os = self.scene.cursor_visible
+                    && !has_custom
+                    && self.scene.cursor_mode != CursorMode::Captured
+                    && self.scene.cursor_mode != CursorMode::Hidden;
+                gpu.window.set_cursor_visible(show_os);
+
+                match self.scene.cursor_mode {
+                    CursorMode::Captured => {
+                        let _ = gpu
+                            .window
+                            .set_cursor_grab(winit::window::CursorGrabMode::Locked)
+                            .or_else(|_| {
+                                gpu.window
+                                    .set_cursor_grab(winit::window::CursorGrabMode::Confined)
+                            });
+                    }
+                    CursorMode::Confined => {
+                        let _ = gpu
+                            .window
+                            .set_cursor_grab(winit::window::CursorGrabMode::Confined);
+                    }
+                    CursorMode::Normal | CursorMode::Hidden => {
+                        let _ = gpu
+                            .window
+                            .set_cursor_grab(winit::window::CursorGrabMode::None);
+                    }
+                }
+            }
+            self.scene.cursor_state_dirty = false;
+        }
+    }
+
     fn render(&mut self) {
         let now = Instant::now();
         let elapsed = now.duration_since(self.last_frame_time);
@@ -509,6 +610,8 @@ impl SceneApp {
             cb(&mut self.scene, dt);
             self.scene.on_update = Some(cb);
         }
+
+        self.sync_cursor();
 
         let gpu = match &self.gpu {
             Some(g) => g,
@@ -755,8 +858,10 @@ impl SceneApp {
             }
         }
 
-        // Render UI Overlay with Typography
-        if !self.scene.ui_elements.is_empty() {
+        // Render UI Overlay with Typography & Custom In-Game Cursor
+        let has_ui = !self.scene.ui_elements.is_empty();
+        let has_custom_cursor = !matches!(self.scene.custom_cursor, CustomCursor::None);
+        if has_ui || has_custom_cursor {
             let p2d = self.pipeline_2d.as_ref().unwrap();
             let half_w = gpu.config.width as f32 / 2.0;
             let half_h = gpu.config.height as f32 / 2.0;
@@ -793,6 +898,26 @@ impl SceneApp {
                 let base_idx = all_vertices.len() as u32;
                 all_vertices.extend_from_slice(&mesh.vertices);
                 for idx in mesh.indices {
+                    all_indices.push(base_idx + idx);
+                }
+            }
+
+            if has_custom_cursor {
+                let cursor_pos = if self.scene.cursor_mode == CursorMode::Captured {
+                    // Locked to screen center in captured / 3D free-look mode
+                    Vec2::ZERO
+                } else {
+                    // Map window pixel coords (0..W, 0..H, top-down) to orthographic space centered at (0,0)
+                    Vec2::new(
+                        self.scene.cursor_screen_pos.x - half_w,
+                        half_h - self.scene.cursor_screen_pos.y,
+                    )
+                };
+
+                let cursor_mesh = self.scene.custom_cursor.generate_mesh(cursor_pos);
+                let base_idx = all_vertices.len() as u32;
+                all_vertices.extend_from_slice(&cursor_mesh.vertices);
+                for idx in cursor_mesh.indices {
                     all_indices.push(base_idx + idx);
                 }
             }
@@ -873,12 +998,18 @@ impl ApplicationHandler for SceneApp {
             WindowEvent::CursorMoved { position, .. } => {
                 let mouse_x = position.x as f32;
                 let mouse_y = position.y as f32;
+                self.scene.cursor_screen_pos = Vec2::new(mouse_x, mouse_y);
                 if let Some(gpu) = &self.gpu {
                     let sw = gpu.config.width as f32;
                     let sh = gpu.config.height as f32;
                     for el in &mut self.scene.ui_elements {
                         el.is_hovered = el.hit_test(mouse_x, mouse_y, sw, sh);
                     }
+                }
+            }
+            WindowEvent::Focused(focused) => {
+                if focused && self.scene.cursor_mode == CursorMode::Captured {
+                    self.scene.cursor_state_dirty = true;
                 }
             }
             WindowEvent::MouseInput {
@@ -998,7 +1129,13 @@ impl ApplicationHandler for SceneApp {
                             }
                         }
                         PhysicalKey::Code(KeyCode::Escape) => {
-                            event_loop.exit();
+                            if self.scene.cursor_mode == CursorMode::Captured {
+                                self.scene.capture_mouse(false);
+                                self.scene.cursor_visible(true);
+                                println!("[azterisk_render] Mouse capture released via Escape.");
+                            } else {
+                                event_loop.exit();
+                            }
                         }
                         _ => {}
                     }

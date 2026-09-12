@@ -1,5 +1,6 @@
 pub use crate::audio::{AudioManager, SpatialSound};
 pub use crate::camera::{Camera, CameraMode, Ease, GridStepperConfig};
+pub use crate::cursor::{CursorMode, CustomCursor};
 pub use crate::entity::{Entity, Mesh, Vertex};
 pub use crate::errors::{AzteriskError, Result};
 pub use crate::lighting::{IntoColor, Light, LightType, LightsUniform, MAX_LIGHTS};
