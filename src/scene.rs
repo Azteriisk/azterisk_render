@@ -8,7 +8,7 @@ use crate::renderer::pipeline::{CameraUniform, ModelUniform, Pipeline2D, Pipelin
 use crate::spatial::{IntoChunkCoord3D, IntoSubCoord3D, SubCoord3D};
 use crate::text::FontAtlas;
 use crate::ui::UIElement;
-use glam::Mat4;
+use glam::{Mat4, Vec3};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -61,6 +61,7 @@ pub struct Scene {
     pub on_key: Option<Box<dyn FnMut(&mut Scene, KeyCode, ElementState) + 'static>>,
     pub pressed_keys: HashSet<KeyCode>,
     pub entities_cleared: bool,
+    pub clear_color: Option<[f64; 4]>,
 }
 
 impl Scene {
@@ -103,7 +104,14 @@ impl Scene {
             on_key: None,
             pressed_keys: HashSet::new(),
             entities_cleared: false,
+            clear_color: None,
         }
+    }
+
+    /// Sets the background clear color (R, G, B, A in 0.0 ..= 1.0).
+    pub fn clear_color(&mut self, r: f64, g: f64, b: f64, a: f64) -> &mut Self {
+        self.clear_color = Some([r, g, b, a]);
+        self
     }
 
     /// Registers a continuous frame update callback called every frame with delta time (seconds).
@@ -586,6 +594,7 @@ impl SceneApp {
                 bytemuck::cast_slice(&[lights_uniform]),
             );
 
+            let c3d = self.scene.clear_color.unwrap_or([0.05, 0.05, 0.07, 1.0]);
             {
                 let mut render_pass = encoder.begin_render_pass(&RenderPassDescriptor {
                     label: Some("3D Render Pass"),
@@ -594,10 +603,10 @@ impl SceneApp {
                         resolve_target: None,
                         ops: Operations {
                             load: LoadOp::Clear(Color {
-                                r: 0.05,
-                                g: 0.05,
-                                b: 0.07,
-                                a: 1.0,
+                                r: c3d[0],
+                                g: c3d[1],
+                                b: c3d[2],
+                                a: c3d[3],
                             }),
                             store: StoreOp::Store,
                         },
@@ -677,9 +686,17 @@ impl SceneApp {
             #[allow(deprecated)]
             let ortho = Mat4::orthographic_rh_gl(-half_w, half_w, -half_h, half_h, -100.0, 100.0);
 
+            let cam_offset = if let Some(cam) = self.scene.cameras.get(&self.scene.active_camera) {
+                Vec3::new(cam.current_world_pos.x, cam.current_world_pos.y, 0.0)
+            } else {
+                Vec3::ZERO
+            };
+            let view_mat = Mat4::from_translation(-cam_offset);
+            let view_proj = ortho * view_mat;
+
             let cam_uniform = CameraUniform {
-                view_proj: ortho.to_cols_array_2d(),
-                camera_pos: [0.0, 0.0, 0.0, 1.0],
+                view_proj: view_proj.to_cols_array_2d(),
+                camera_pos: [cam_offset.x, cam_offset.y, 0.0, 1.0],
             };
             gpu.queue.write_buffer(
                 &p2d.camera_buffer,
@@ -687,6 +704,7 @@ impl SceneApp {
                 bytemuck::cast_slice(&[cam_uniform]),
             );
 
+            let c2d = self.scene.clear_color.unwrap_or([0.08, 0.08, 0.10, 1.0]);
             {
                 let mut render_pass = encoder.begin_render_pass(&RenderPassDescriptor {
                     label: Some("2D Render Pass"),
@@ -695,10 +713,10 @@ impl SceneApp {
                         resolve_target: None,
                         ops: Operations {
                             load: LoadOp::Clear(Color {
-                                r: 0.08,
-                                g: 0.08,
-                                b: 0.10,
-                                a: 1.0,
+                                r: c2d[0],
+                                g: c2d[1],
+                                b: c2d[2],
+                                a: c2d[3],
                             }),
                             store: StoreOp::Store,
                         },
